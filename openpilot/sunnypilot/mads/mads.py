@@ -101,6 +101,11 @@ class ModularAssistiveDrivingSystem:
     if self.state_machine.state != State.paused:
       self.events_sp.add(EventNameSP.silentLkasDisable)
 
+  def add_rivian_scroll_event(self, CS: structs.CarState) -> None:
+    if self.enabled_toggle and self.CP.brand == "rivian" and self.selfdrive.enabled and \
+       any(be.type == ButtonType.lkas and be.pressed for be in CS.buttonEvents):
+      self.events.add(EventName.buttonCancel)
+
   def replace_event(self, old_event: int, new_event: int):
     self.events.remove(old_event)
     self.events_sp.add(new_event)
@@ -179,13 +184,18 @@ class ModularAssistiveDrivingSystem:
       if be.type == ButtonType.cancel:
         if not self.selfdrive.enabled and self.selfdrive.enabled_prev:
           self.events_sp.add(EventNameSP.manualLongitudinalRequired)
-      if be.type == ButtonType.lkas and be.pressed and (CS.cruiseState.available or self.allow_always):
-        if self.enabled:
+      if be.type == ButtonType.lkas and be.pressed:
+        if self.CP.brand == "rivian":
+          if self.enabled:
+            self.events_sp.add(EventNameSP.lkasDisable)
+          elif not self.selfdrive.enabled_prev:
+            self.events_sp.add(EventNameSP.lkasEnable)
+        elif (CS.cruiseState.available or self.allow_always) and self.enabled:
           if self.selfdrive.enabled:
             self.events_sp.add(EventNameSP.manualSteeringRequired)
           else:
             self.events_sp.add(EventNameSP.lkasDisable)
-        else:
+        elif CS.cruiseState.available or self.allow_always:
           self.events_sp.add(EventNameSP.lkasEnable)
 
     if not CS.cruiseState.available and not self.no_main_cruise:
