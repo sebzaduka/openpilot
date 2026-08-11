@@ -94,6 +94,12 @@ class CarEvents:
       # if CC.eps_timer_soft_disable_alert:
       #   events.add(EventName.steerTimeLimit)
 
+    elif self.CP.brand == 'rivian':
+      # Park is an explicit full disengagement on Rivian. Do not wait for the
+      # generic wrongGear soft-disable timer to expire.
+      if CS.gearShifter == GearShifter.park:
+        events.add(EventName.pcmDisable)
+
     return events
 
   def create_common_events(self, CS: structs.CarState, CS_prev: car.CarState):
