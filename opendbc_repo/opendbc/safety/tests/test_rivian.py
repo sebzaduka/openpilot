@@ -11,6 +11,10 @@ from opendbc.car.vehicle_model import VehicleModel
 from opendbc.safety.tests.libsafety import libsafety_py
 import opendbc.safety.tests.common as common
 from opendbc.safety.tests.common import CANPackerSafety
+from opendbc.sunnypilot.car.rivian.values import RivianSafetyFlagsSP
+
+
+RIGHT_SCROLL_LONG_PRESS_US = 1_000_000
 
 
 def checksum(msg):
@@ -230,6 +234,183 @@ class TestRivianLongitudinalSafety(TestRivianSafetyBase):
     self.safety = libsafety_py.libsafety
     self.safety.set_safety_hooks(CarParams.SafetyModel.rivian, RivianSafetyFlags.LONG_CONTROL)
     self.safety.init_tests()
+
+
+class TestRivianLongitudinalHarnessSafety(TestRivianLongitudinalSafety):
+
+  def setUp(self):
+    self.VM = VehicleModel(get_safety_CP())
+    self.packer = CANPackerSafety("rivian_primary_actuator")
+    self.packer_buttons = CANPackerSafety("rivian_park_assist_can")
+    self.safety = libsafety_py.libsafety
+    self.safety.set_current_safety_param_sp(RivianSafetyFlagsSP.LONGITUDINAL_HARNESS_UPGRADE)
+    self.safety.set_safety_hooks(CarParams.SafetyModel.rivian, RivianSafetyFlags.LONG_CONTROL)
+    self.safety.init_tests()
+
+  def _right_scroll_msg(self, pressed):
+    values = {"RightButton_ScrollClick": 2 if pressed else 0}
+    return self.packer_buttons.make_can_msg_safety("WheelButtons_Fwd", 1, values)
+
+  def _trailer_status_msg(self, status):
+    values = {"CGM_TrailerPresent": status}
+    return self.packer.make_can_msg_safety("VDM_CGM_GW", 0, values)
+
+  def _right_scroll_long_press(self, trailer_status=0):
+    if trailer_status is not None:
+      self._rx(self._trailer_status_msg(trailer_status))
+    self.safety.set_timer(0)
+    self._rx(self._right_scroll_msg(True))
+    self.safety.set_timer(RIGHT_SCROLL_LONG_PRESS_US)
+    self._rx(self._right_scroll_msg(True))
+
+  def test_right_scroll_short_press_does_not_engage_lateral(self):
+    self.safety.set_mads_params(True, True, False)
+    self._rx(self._trailer_status_msg(0))
+
+    self.safety.set_timer(0)
+    self._rx(self._right_scroll_msg(True))
+    self.safety.set_timer(RIGHT_SCROLL_LONG_PRESS_US - 1)
+    self._rx(self._right_scroll_msg(True))
+    self._rx(self._right_scroll_msg(False))
+
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+
+  def test_right_scroll_long_press_engages_lateral_only(self):
+    self.safety.set_mads_params(True, True, False)
+
+    self._right_scroll_long_press()
+
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+    self.assertTrue(self._tx(self._angle_cmd_msg(0, True)))
+    self.assertFalse(self._tx(self._accel_msg(1.0)))
+
+  def test_right_scroll_continuous_hold_does_not_retrigger(self):
+    self.safety.set_mads_params(True, True, False)
+    self._right_scroll_long_press()
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
+    self.safety.set_controls_allowed_lateral(False)
+    self.safety.set_timer(2 * RIGHT_SCROLL_LONG_PRESS_US)
+    self._rx(self._right_scroll_msg(True))
+
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+
+  def test_right_scroll_release_allows_another_long_press(self):
+    self.safety.set_mads_params(True, True, False)
+    self._right_scroll_long_press()
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
+    self._rx(self._right_scroll_msg(False))
+    self._right_scroll_long_press()
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+
+    self._rx(self._right_scroll_msg(False))
+    self._right_scroll_long_press()
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
+  def test_right_scroll_long_press_disengages_all_controls(self):
+    self.safety.set_mads_params(True, True, False)
+    self.safety.set_controls_allowed(True)
+    self.safety.set_controls_allowed_lateral(True)
+
+    self._right_scroll_long_press()
+
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+    self.assertEqual(4, self.safety.mads_get_current_disengage_reason())
+
+  def test_right_scroll_long_press_disengages_longitudinal_without_enabling_lateral(self):
+    self.safety.set_mads_params(True, True, False)
+    self.safety.set_controls_allowed(True)
+
+    self._right_scroll_long_press()
+
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+
+  def test_right_scroll_long_press_does_not_engage_when_mads_disabled(self):
+    self.safety.set_mads_params(False, False, False)
+    self.safety.set_controls_allowed(True)
+
+    self._right_scroll_long_press()
+
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+
+  def test_right_scroll_long_press_blocked_with_trailer_or_invalid_status(self):
+    for trailer_status in (1, 2, 3):
+      self.safety.set_mads_params(True, True, False)
+      self._right_scroll_long_press(trailer_status)
+
+      self.assertFalse(self.safety.get_controls_allowed())
+      self.assertFalse(self.safety.get_controls_allowed_lateral())
+      self._rx(self._right_scroll_msg(False))
+
+  def test_right_scroll_long_press_blocked_before_trailer_status_seen(self):
+    self.safety.set_mads_params(True, True, False)
+
+    self._right_scroll_long_press(trailer_status=None)
+
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+
+  def test_right_scroll_hold_starts_when_trailer_absence_becomes_known(self):
+    self.safety.set_mads_params(True, True, False)
+    self.safety.set_timer(0)
+    self._rx(self._right_scroll_msg(True))
+
+    status_seen_time = RIGHT_SCROLL_LONG_PRESS_US // 2
+    self.safety.set_timer(status_seen_time)
+    self._rx(self._trailer_status_msg(0))
+    self._rx(self._right_scroll_msg(True))
+
+    self.safety.set_timer(status_seen_time + RIGHT_SCROLL_LONG_PRESS_US - 1)
+    self._rx(self._right_scroll_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+
+    self.safety.set_timer(status_seen_time + RIGHT_SCROLL_LONG_PRESS_US)
+    self._rx(self._right_scroll_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
+  def test_right_scroll_long_press_does_not_disengage_with_trailer(self):
+    self.safety.set_mads_params(True, True, False)
+    self.safety.set_controls_allowed(True)
+    self.safety.set_controls_allowed_lateral(True)
+
+    self._right_scroll_long_press(trailer_status=1)
+
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
+  def test_trailer_connected_during_hold_requires_release(self):
+    self.safety.set_mads_params(True, True, False)
+    self._rx(self._trailer_status_msg(0))
+    self.safety.set_timer(0)
+    self._rx(self._right_scroll_msg(True))
+
+    self.safety.set_timer(RIGHT_SCROLL_LONG_PRESS_US // 2)
+    self._rx(self._trailer_status_msg(1))
+    self._rx(self._trailer_status_msg(0))
+    self.safety.set_timer(2 * RIGHT_SCROLL_LONG_PRESS_US)
+    self._rx(self._right_scroll_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+
+    self._rx(self._right_scroll_msg(False))
+    self._right_scroll_long_press()
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
+  def test_right_scroll_ignored_without_harness_safety_flag(self):
+    self.safety.set_current_safety_param_sp(0)
+    self.safety.set_safety_hooks(CarParams.SafetyModel.rivian, RivianSafetyFlags.LONG_CONTROL)
+    self.safety.init_tests()
+    self.safety.set_mads_params(True, True, False)
+
+    self._right_scroll_long_press()
+
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
 
 
 class TestRivianIgnition(unittest.TestCase):
