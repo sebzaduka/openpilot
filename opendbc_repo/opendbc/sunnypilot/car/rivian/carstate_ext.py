@@ -7,7 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 import math
 from enum import StrEnum
 
-from opendbc.car import Bus, structs
+from opendbc.car import Bus, DT_CTRL, structs
 from opendbc.can.parser import CANParser
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.rivian.values import DBC
@@ -17,6 +17,8 @@ ButtonType = structs.CarState.ButtonEvent.Type
 
 MAX_SET_SPEED = 85 * CV.MPH_TO_MS
 MIN_SET_SPEED = 20 * CV.MPH_TO_MS
+RIGHT_SCROLL_CLICK_VALUE = 2
+RIGHT_SCROLL_LONG_PRESS_FRAMES = int(1.0 / DT_CTRL)
 
 
 class CarStateExt:
@@ -33,22 +35,62 @@ class CarStateExt:
     self.acm_accel_last = 0.0
     self.acm_rail_counter = 0
     self.acm_settle_cooldown = 0
+    self.right_scroll_press_frames = 0
+    self.right_scroll_long_press_triggered = False
+    self.right_scroll_blocked_until_release = False
+
+  def _update_right_scroll_long_press(self, pressed: bool, trailer_status: int | None) -> bool:
+    """Return True once when a continuous press reaches the long-press threshold."""
+    if not pressed:
+      self.right_scroll_press_frames = 0
+      self.right_scroll_long_press_triggered = False
+      self.right_scroll_blocked_until_release = False
+      return False
+
+    if trailer_status is not None and trailer_status != 0:
+      self.right_scroll_press_frames = 0
+      self.right_scroll_long_press_triggered = False
+      self.right_scroll_blocked_until_release = True
+      return False
+
+    if self.right_scroll_blocked_until_release:
+      return False
+
+    if trailer_status is None:
+      self.right_scroll_press_frames = 0
+      self.right_scroll_long_press_triggered = False
+      return False
+
+    self.right_scroll_press_frames += 1
+    if not self.right_scroll_long_press_triggered and self.right_scroll_press_frames >= RIGHT_SCROLL_LONG_PRESS_FRAMES:
+      self.right_scroll_long_press_triggered = True
+      return True
+
+    return False
 
   def update_longitudinal_upgrade(self, ret: structs.CarState, can_parsers: dict[StrEnum, CANParser]) -> None:
     cp_park = can_parsers[Bus.alt]
     cp_adas = can_parsers[Bus.adas]
-    cp_cam = can_parsers[Bus.cam]
     cp = can_parsers[Bus.pt]
 
     prev_increase_button = self.increase_button
     prev_decrease_button = self.decrease_button
 
+    right_scroll_pressed = cp_park.vl["WheelButtons_Fwd"]["RightButton_ScrollClick"] == RIGHT_SCROLL_CLICK_VALUE
+    trailer_status = int(cp.vl["VDM_CGM_GW"]["CGM_TrailerPresent"])
+    trailer_status_seen = cp.ts_nanos["VDM_CGM_GW"]["CGM_TrailerPresent"] != 0
+    trailer_status = trailer_status if trailer_status_seen else None
+    if self._update_right_scroll_long_press(right_scroll_pressed, trailer_status):
+      ret.buttonEvents = [*ret.buttonEvents, structs.CarState.ButtonEvent(pressed=True, type=ButtonType.lkas)]
+
     if self.CP.openpilotLongitudinalControl:
+      cp_cam = can_parsers[Bus.cam]
+
       # distance scroll wheel
       right_scroll = cp_park.vl["WheelButtons_Fwd"]["RightButton_Scroll"]
       if right_scroll != 255:
         if self.distance_button != right_scroll:
-          ret.buttonEvents = [structs.CarState.ButtonEvent(pressed=False, type=ButtonType.gapAdjustCruise)]
+          ret.buttonEvents = [*ret.buttonEvents, structs.CarState.ButtonEvent(pressed=False, type=ButtonType.gapAdjustCruise)]
         self.distance_button = right_scroll
 
       # button logic for set-speed

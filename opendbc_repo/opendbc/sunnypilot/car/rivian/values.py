@@ -9,3 +9,7 @@ from enum import IntFlag
 
 class RivianFlagsSP(IntFlag):
   LONGITUDINAL_HARNESS_UPGRADE = 1
+
+
+class RivianSafetyFlagsSP:
+  LONGITUDINAL_HARNESS_UPGRADE = 1

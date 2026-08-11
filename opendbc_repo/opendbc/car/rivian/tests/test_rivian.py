@@ -5,6 +5,8 @@ from opendbc.car.rivian.ext_controller import ExternalController, HANDS_OFF_EXIT
 from opendbc.car.rivian.interface import CarInterface
 from opendbc.car.rivian.fingerprints import FW_VERSIONS
 from opendbc.car.rivian.values import CAR, FW_QUERY_CONFIG, WMI, ModelLine, ModelYear
+from opendbc.car import structs
+from opendbc.sunnypilot.car.rivian.values import RivianFlagsSP, RivianSafetyFlagsSP
 
 
 def _fake_controller_state(*, standstill: bool, v_ego_raw: float):
@@ -41,6 +43,15 @@ def _update_fresh_engagement(erc: ExternalController, *, standstill: bool, v_ego
 
 
 class TestRivian(unittest.TestCase):
+  def test_longitudinal_harness_sets_matching_runtime_and_safety_flags(self):
+    CP = structs.CarParams()
+    CP_SP = structs.CarParamsSP()
+
+    CarInterface._get_params_sp(CP, CP_SP, CAR.RIVIAN_R1, {1: {0x131A: 7}}, [], False, False, False)
+
+    self.assertTrue(CP_SP.flags & RivianFlagsSP.LONGITUDINAL_HARNESS_UPGRADE)
+    self.assertTrue(CP_SP.safetyParam & RivianSafetyFlagsSP.LONGITUDINAL_HARNESS_UPGRADE)
+
   def test_custom_fuzzy_fingerprinting(self):
     for platform in CAR:
       with self.subTest(platform=platform.name):
