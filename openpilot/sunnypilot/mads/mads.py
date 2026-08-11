@@ -117,6 +117,14 @@ class ModularAssistiveDrivingSystem:
       self.lateral_mismatch_counter += 1
 
   def update_events(self, CS: structs.CarState):
+    rivian_park = self.CP.brand == "rivian" and CS.gearShifter == GearShifter.park
+
+    # Unlike other non-drive gears, Park is a full disengagement on Rivian.
+    # Keep this outside the selfdrive-enabled check so combined lateral and
+    # longitudinal operation disengages both state machines in the same cycle.
+    if rivian_park and self.enabled:
+      self.events_sp.add(EventNameSP.lkasDisable)
+
     if not self.selfdrive.enabled and self.enabled:
       if CS.standstill:
         if self.events.has(EventName.doorOpen):
@@ -125,7 +133,7 @@ class ModularAssistiveDrivingSystem:
         if self.events.has(EventName.seatbeltNotLatched):
           self.replace_event(EventName.seatbeltNotLatched, EventNameSP.silentSeatbeltNotLatched)
           self.transition_paused_state()
-      if self.events.has(EventName.wrongGear) and (CS.vEgo < 2.5 or CS.gearShifter == GearShifter.reverse):
+      if self.events.has(EventName.wrongGear) and not rivian_park and (CS.vEgo < 2.5 or CS.gearShifter == GearShifter.reverse):
         self.replace_event(EventName.wrongGear, EventNameSP.silentWrongGear)
         self.transition_paused_state()
       if self.events.has(EventName.reverseGear):
