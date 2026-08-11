@@ -2,6 +2,28 @@
 
 #include "opendbc/safety/declarations.h"
 
+#define RIVIAN_COMMON_RX_CHECKS \
+  {.msg = {{0x208, 0, 8, 50U, .max_counter = 14U}, { 0 }, { 0 }}},                                                             /* ESP_Status (speed) */                         \
+  {.msg = {{0x150, 0, 7, 50U, .max_counter = 14U}, { 0 }, { 0 }}},                                                             /* VDM_PropStatus (gas pedal & 2nd speed) */     \
+  {.msg = {{0x380, 0, 5, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},  /* EPAS_SystemStatus (driver torque) */          \
+  {.msg = {{0x390, 0, 7, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},  /* EPAS_AdasStatus (measured angle) */           \
+  {.msg = {{0x38f, 0, 6, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},   /* iBESP2 (brakes) */                            \
+  {.msg = {{0x100, 2, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},  /* ACM_Status (cruise state) */                  \
+
+#define RIVIAN_WHEEL_BUTTONS_ADDR_CHECK \
+  {.msg = {{0x131A, 1, 7, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},  /* WheelButtons_Fwd */ \
+
+#define RIVIAN_TRAILER_STATUS_ADDR_CHECK \
+  {.msg = {{0x180, 0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},  /* VDM_CGM_GW */ \
+
+static bool rivian_right_scroll_pressed_prev = false;
+static bool rivian_right_scroll_long_press_triggered = false;
+static bool rivian_right_scroll_blocked_until_release = false;
+static bool rivian_right_scroll_timing_active = false;
+static bool rivian_trailer_status_seen = false;
+static bool rivian_trailer_absent = false;
+static uint32_t rivian_right_scroll_press_ts = 0U;
+
 static uint8_t rivian_get_counter(const CANPacket_t *msg) {
   // Signal: ESP_Status_Counter, VDM_PropStatus_Counter
   return msg->data[1] & 0xFU;
@@ -53,6 +75,7 @@ static bool rivian_get_quality_flag_valid(const CANPacket_t *msg) {
 }
 
 static void rivian_rx_hook(const CANPacket_t *msg) {
+  const uint32_t RIVIAN_RIGHT_SCROLL_LONG_PRESS_US = 1000000U;
 
   if (msg->bus == 0U)  {
     // Vehicle speed
@@ -89,6 +112,20 @@ static void rivian_rx_hook(const CANPacket_t *msg) {
     if (msg->addr == 0x38fU) {
       brake_pressed = (msg->data[2] >> 7) & 1U;
     }
+
+    if (msg->addr == 0x180U) {
+      // CGM_TrailerPresent: 0=not present, 1=present, 3=invalid
+      const uint8_t trailer_status = (msg->data[1] >> 4) & 0x3U;
+      rivian_trailer_status_seen = true;
+      rivian_trailer_absent = trailer_status == 0U;
+      if (!rivian_trailer_absent && rivian_right_scroll_pressed_prev) {
+        rivian_right_scroll_press_ts = 0U;
+        rivian_right_scroll_timing_active = false;
+        rivian_right_scroll_long_press_triggered = false;
+        rivian_right_scroll_blocked_until_release = true;
+        mads_button_press = MADS_BUTTON_NOT_PRESSED;
+      }
+    }
   }
 
   if (msg->bus == 2U) {
@@ -97,6 +134,53 @@ static void rivian_rx_hook(const CANPacket_t *msg) {
       const int feature_status = msg->data[2] >> 5U;
       pcm_cruise_check(feature_status == 1);
     }
+  }
+
+  if ((msg->bus == 1U) && (msg->addr == 0x131AU)) {
+    const bool right_scroll_pressed = ((msg->data[4] >> 2) & 0x3U) == 2U;
+    const uint32_t now = microsecond_timer_get();
+
+    if (!right_scroll_pressed) {
+      rivian_right_scroll_press_ts = 0U;
+      rivian_right_scroll_timing_active = false;
+      rivian_right_scroll_long_press_triggered = false;
+      rivian_right_scroll_blocked_until_release = false;
+      mads_button_press = MADS_BUTTON_NOT_PRESSED;
+    } else if (rivian_trailer_status_seen && !rivian_trailer_absent) {
+      rivian_right_scroll_press_ts = 0U;
+      rivian_right_scroll_timing_active = false;
+      rivian_right_scroll_long_press_triggered = false;
+      rivian_right_scroll_blocked_until_release = true;
+      mads_button_press = MADS_BUTTON_NOT_PRESSED;
+    } else if (rivian_right_scroll_blocked_until_release) {
+      mads_button_press = MADS_BUTTON_NOT_PRESSED;
+    } else if (!rivian_trailer_status_seen) {
+      rivian_right_scroll_press_ts = 0U;
+      rivian_right_scroll_timing_active = false;
+      rivian_right_scroll_long_press_triggered = false;
+      mads_button_press = MADS_BUTTON_NOT_PRESSED;
+    } else {
+      if (!rivian_right_scroll_timing_active) {
+        rivian_right_scroll_press_ts = now;
+        rivian_right_scroll_timing_active = true;
+      }
+
+      const bool long_press = safety_get_ts_elapsed(now, rivian_right_scroll_press_ts) >= RIVIAN_RIGHT_SCROLL_LONG_PRESS_US;
+      if (long_press && !rivian_right_scroll_long_press_triggered) {
+        rivian_right_scroll_long_press_triggered = true;
+        if (m_mads_state.system_enabled) {
+          if (controls_allowed || controls_allowed_lateral) {
+            controls_allowed = false;
+            mads_exit_controls(MADS_DISENGAGE_REASON_BUTTON);
+            mads_button_press = MADS_BUTTON_NOT_PRESSED;
+          } else {
+            mads_button_press = MADS_BUTTON_PRESSED;
+          }
+        }
+      }
+    }
+
+    rivian_right_scroll_pressed_prev = right_scroll_pressed;
   }
 }
 
@@ -183,15 +267,27 @@ static safety_config rivian_init(uint16_t param) {
   static const CanMsg RIVIAN_LONG_TX_MSGS[] = {{0x100, 0, 8, .check_relay = true}, {0x110, 0, 8, .check_relay = true}, {0x120, 0, 8, .check_relay = true}, {0x321, 2, 7, .check_relay = true}, {0x160, 0, 5, .check_relay = true}};
 
   static RxCheck rivian_rx_checks[] = {
-    {.msg = {{0x208, 0, 8, 50U, .max_counter = 14U}, { 0 }, { 0 }}},                                                             // ESP_Status (speed)
-    {.msg = {{0x150, 0, 7, 50U, .max_counter = 14U}, { 0 }, { 0 }}},                                                             // VDM_PropStatus (gas pedal & 2nd speed)
-    {.msg = {{0x380, 0, 5, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},  // EPAS_SystemStatus (driver torque)
-    {.msg = {{0x390, 0, 7, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},  // EPAS_AdasStatus (measured angle)
-    {.msg = {{0x38f, 0, 6, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},   // iBESP2 (brakes)
-    {.msg = {{0x100, 2, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},  // ACM_Status (cruise state)
+    RIVIAN_COMMON_RX_CHECKS
+  };
+
+  static RxCheck rivian_wheel_buttons_rx_checks[] = {
+    RIVIAN_COMMON_RX_CHECKS
+    RIVIAN_WHEEL_BUTTONS_ADDR_CHECK
+    RIVIAN_TRAILER_STATUS_ADDR_CHECK
   };
 
   bool rivian_longitudinal = false;
+  const uint16_t RIVIAN_PARAM_SP_LONGITUDINAL_HARNESS_UPGRADE = 1U;
+  const bool rivian_has_wheel_buttons = GET_FLAG(current_safety_param_sp, RIVIAN_PARAM_SP_LONGITUDINAL_HARNESS_UPGRADE);
+
+  rivian_right_scroll_pressed_prev = false;
+  rivian_right_scroll_long_press_triggered = false;
+  rivian_right_scroll_blocked_until_release = false;
+  rivian_right_scroll_timing_active = false;
+  rivian_trailer_status_seen = false;
+  rivian_trailer_absent = false;
+  rivian_right_scroll_press_ts = 0U;
+  mads_button_press = MADS_BUTTON_UNAVAILABLE;
 
   SAFETY_UNUSED(param);
   #ifdef ALLOW_DEBUG
@@ -202,8 +298,19 @@ static safety_config rivian_init(uint16_t param) {
   // FIXME: cppcheck thinks that rivian_longitudinal is always false. This is not true
   // if ALLOW_DEBUG is defined but cppcheck is run without ALLOW_DEBUG
   // cppcheck-suppress knownConditionTrueFalse
-  return rivian_longitudinal ? BUILD_SAFETY_CFG(rivian_rx_checks, RIVIAN_LONG_TX_MSGS) : \
-                               BUILD_SAFETY_CFG(rivian_rx_checks, RIVIAN_TX_MSGS);
+  safety_config ret;
+  if (rivian_longitudinal) {
+    SET_TX_MSGS(RIVIAN_LONG_TX_MSGS, ret);
+  } else {
+    SET_TX_MSGS(RIVIAN_TX_MSGS, ret);
+  }
+
+  if (rivian_has_wheel_buttons) {
+    SET_RX_CHECKS(rivian_wheel_buttons_rx_checks, ret);
+  } else {
+    SET_RX_CHECKS(rivian_rx_checks, ret);
+  }
+  return ret;
 }
 
 const safety_hooks rivian_hooks = {
