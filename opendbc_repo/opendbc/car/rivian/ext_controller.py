@@ -12,11 +12,11 @@ from opendbc.car.vehicle_model import VehicleModel
 
 # EPAS angle envelope (EPAS_High_Angle_Cmd_Err)
 EPAS_FW_MAX_ANGLE_BP = [0.0, 2.78, 5.56, 8.33, 12.50, 16.67, 22.22, 27.78]  # m/s
-EPAS_FW_MAX_ANGLE_V  = [500, 500,  250,  150,  85,    56,    40,    25   ]  # deg
+EPAS_FW_MAX_ANGLE_V  = [500, 500,  250,  150,  85,    56,    40,    25]  # deg
 
 # EPAS windowed rate limit (EPAS_High_Actual_Angle_Rate_Err)
 EPAS_FW_RATE_BP = [5.56, 8.33, 12.50, 16.67]  # m/s
-EPAS_FW_RATE_V  = [4.50, 1.50, 0.60,  0.18 ]  # deg/frame
+EPAS_FW_RATE_V  = [4.50, 1.50, 0.60,  0.18]  # deg/frame
 
 EPAS_FW_ANGLE_MARGIN = 0.98
 EPAS_FW_RATE_MARGIN  = 0.94
@@ -25,6 +25,7 @@ EPAS_FW_RATE_MARGIN  = 0.94
 PANDA_STEP_MARGIN = 0.9
 
 MIN_TORQUE_FRAMES = 50
+MIN_TORQUE_EXIT_SPEED = 0.6  # m/s; stay in torque at parking-lot speeds before handing back to angle
 HANDOFF_EXIT_DEG = 15.0      # hand back to angle when the wheel is within this of the commanded angle
 UNWIND_HANDOFF_RATE = 40.0  # max wheel speed in deg/s to hand back to angle
 HANDOFF_MAX_ANGLE_DEG = 25.0  # no handoff to angle mid-turn
@@ -157,6 +158,7 @@ class ExternalController:
     eac_active = CS.eac_status == 2
     # how far the wheel is from the angle openpilot wants
     gap = abs(desired_angle - CS.out.steeringAngleDeg)
+    above_min_torque_exit_speed = not CS.out.standstill and CS.out.vEgoRaw > MIN_TORQUE_EXIT_SPEED
 
     if not lat_active:
       self.torque_active = False
@@ -166,11 +168,17 @@ class ExternalController:
     # EPAS lost angle and won't recover, torque re-arms it
     elif self.eac_dead_frames >= EAC_RECOVER_FRAMES:
       self.torque_active = True
-    # fresh engage while EPAS is not ready yet
-    elif not self.lat_active_last and not epas_ready:
+    # fresh engage while EPAS is not ready, or at low speed where angle control can jolt the wheel
+    elif not self.lat_active_last and (not epas_ready or not above_min_torque_exit_speed):
       self.torque_active = True
     # hand back to angle once hands off and the wheel is settled near the commanded angle
-    elif self.torque_active and self.torque_active_frames >= MIN_TORQUE_FRAMES and self.hands_off_frames >= HANDS_OFF_EXIT_FRAMES and epas_ready:
+    elif (
+         self.torque_active
+         and self.torque_active_frames >= MIN_TORQUE_FRAMES
+         and self.hands_off_frames >= HANDS_OFF_EXIT_FRAMES
+         and epas_ready
+         and above_min_torque_exit_speed
+      ):
       fw_max = float(np.interp(CS.out.vEgoRaw, EPAS_FW_MAX_ANGLE_BP, EPAS_FW_MAX_ANGLE_V)) * EPAS_FW_ANGLE_MARGIN
       in_envelope = abs(CS.out.steeringAngleDeg) < min(fw_max, HANDOFF_MAX_ANGLE_DEG)
       # only once the wheel motion fits the EPAS rate budget
