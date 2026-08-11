@@ -4,16 +4,31 @@ from openpilot.cereal import custom, log
 from opendbc.car import structs
 
 from openpilot.selfdrive.selfdrived.events import Events
-from openpilot.sunnypilot.mads.helpers import MadsSteeringModeOnBrake
+from openpilot.sunnypilot.mads.helpers import MadsSteeringModeOnBrake, set_car_specific_params
 from openpilot.sunnypilot.mads.mads import ModularAssistiveDrivingSystem
 from openpilot.sunnypilot.mads.state import StateMachine
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
+from opendbc.sunnypilot.car.rivian.values import RivianSafetyFlagsSP
 
 
 State = custom.ModularAssistiveDrivingSystem.ModularAssistiveDrivingSystemState
 EventName = log.OnroadEvent.EventName
 EventNameSP = custom.OnroadEventSP.EventName
 GearShifter = structs.CarState.GearShifter
+ButtonType = structs.CarState.ButtonEvent.Type
+
+
+class FakeParams:
+  def put(self, *args, **kwargs):
+    pass
+
+  def put_bool(self, *args, **kwargs):
+    pass
+
+  def remove(self, *args, **kwargs):
+    pass
+
+
 def build_mads(gear: structs.CarState.GearShifter):
   events = Events()
   if gear != GearShifter.drive:
@@ -52,6 +67,15 @@ def build_mads(gear: structs.CarState.GearShifter):
   return mads, CS
 
 
+def test_rivian_scroll_safety_flag_is_preserved():
+  CP = structs.CarParams(brand="rivian")
+  CP_SP = structs.CarParamsSP(safetyParam=RivianSafetyFlagsSP.LONGITUDINAL_HARNESS_UPGRADE)
+
+  set_car_specific_params(CP, CP_SP, FakeParams())
+
+  assert CP_SP.safetyParam & RivianSafetyFlagsSP.LONGITUDINAL_HARNESS_UPGRADE
+
+
 def test_rivian_park_fully_disables_mads():
   mads, CS = build_mads(GearShifter.park)
 
@@ -77,3 +101,99 @@ def test_rivian_reverse_retains_paused_behavior():
   assert mads.state_machine.state == State.paused
   assert enabled
   assert not active
+
+
+def test_rivian_scroll_long_press_disables_lateral_and_longitudinal():
+  mads, CS = build_mads(GearShifter.drive)
+  mads.selfdrive.enabled = True
+  CS.buttonEvents = [structs.CarState.ButtonEvent(pressed=True, type=ButtonType.lkas)]
+
+  mads.add_rivian_scroll_event(CS)
+  assert mads.events.has(EventName.buttonCancel)
+
+  mads.selfdrive.enabled = False  # main state machine consumes buttonCancel first
+  mads.update_events(CS)
+  enabled, active = mads.state_machine.update()
+
+  assert mads.events_sp.has(EventNameSP.lkasDisable)
+  assert not enabled
+  assert not active
+
+
+def test_rivian_scroll_long_press_disables_mads_only():
+  mads, CS = build_mads(GearShifter.drive)
+  CS.buttonEvents = [structs.CarState.ButtonEvent(pressed=True, type=ButtonType.lkas)]
+
+  mads.add_rivian_scroll_event(CS)
+  assert not mads.events.has(EventName.buttonCancel)
+  mads.update_events(CS)
+  enabled, active = mads.state_machine.update()
+
+  assert mads.events_sp.has(EventNameSP.lkasDisable)
+  assert not enabled
+  assert not active
+
+
+def test_rivian_scroll_long_press_disables_paused_or_overriding_mads():
+  for initial_state in (State.paused, State.overriding):
+    mads, CS = build_mads(GearShifter.drive)
+    mads.state_machine.state = initial_state
+    CS.buttonEvents = [structs.CarState.ButtonEvent(pressed=True, type=ButtonType.lkas)]
+
+    mads.add_rivian_scroll_event(CS)
+    mads.update_events(CS)
+    enabled, active = mads.state_machine.update()
+
+    assert mads.events_sp.has(EventNameSP.lkasDisable)
+    assert not enabled
+    assert not active
+
+
+def test_rivian_scroll_long_press_enables_mads_only():
+  mads, CS = build_mads(GearShifter.drive)
+  mads.enabled = False
+  mads.active = False
+  mads.state_machine.state = State.disabled
+  CS.buttonEvents = [structs.CarState.ButtonEvent(pressed=True, type=ButtonType.lkas)]
+
+  mads.add_rivian_scroll_event(CS)
+  mads.update_events(CS)
+  enabled, active = mads.state_machine.update()
+
+  assert not mads.events.has(EventName.buttonCancel)
+  assert mads.events_sp.has(EventNameSP.lkasEnable)
+  assert not mads.events_sp.has(EventNameSP.lkasDisable)
+  assert enabled
+  assert active
+
+
+def test_rivian_scroll_long_press_does_not_enable_mads_after_full_disengagement():
+  mads, CS = build_mads(GearShifter.drive)
+  mads.enabled = False
+  mads.active = False
+  mads.state_machine.state = State.disabled
+  mads.selfdrive.enabled = True
+  mads.selfdrive.enabled_prev = True
+  CS.buttonEvents = [structs.CarState.ButtonEvent(pressed=True, type=ButtonType.lkas)]
+
+  mads.add_rivian_scroll_event(CS)
+  assert mads.events.has(EventName.buttonCancel)
+
+  mads.selfdrive.enabled = False  # main state machine consumes buttonCancel first
+  mads.update_events(CS)
+
+  assert not mads.events_sp.has(EventNameSP.lkasEnable)
+  assert not mads.events_sp.has(EventNameSP.lkasDisable)
+
+
+def test_rivian_scroll_long_press_ignored_with_mads_disabled():
+  mads, CS = build_mads(GearShifter.drive)
+  mads.enabled = False
+  mads.active = False
+  mads.enabled_toggle = False
+  mads.state_machine.state = State.disabled
+  CS.buttonEvents = [structs.CarState.ButtonEvent(pressed=True, type=ButtonType.lkas)]
+
+  mads.add_rivian_scroll_event(CS)
+
+  assert not mads.events.has(EventName.buttonCancel)

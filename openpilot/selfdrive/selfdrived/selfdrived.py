@@ -513,6 +513,12 @@ class SelfdriveD(CruiseHelper):
 
     CruiseHelper.update(self, CS, self.events_sp, self.experimental_mode)
 
+    # The extreme-harness right-scroll long press engages lateral-only control
+    # from fully disengaged, or fully disengages from lateral-only or combined
+    # lateral/longitudinal control. Add cancel before the longitudinal transition;
+    # MADS handles the lateral transition.
+    self.mads.add_rivian_scroll_event(CS)
+
     # decrement personality on distance button press
     if self.CP.openpilotLongitudinalControl:
       if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
