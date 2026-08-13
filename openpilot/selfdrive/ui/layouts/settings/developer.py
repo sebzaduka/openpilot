@@ -3,6 +3,7 @@ from openpilot.selfdrive.ui.widgets.ssh_key import ssh_key_item
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.list_view import toggle_item
+from openpilot.system.ui.widgets.list_view import button_item
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 from openpilot.system.ui.lib.application import gui_app
@@ -94,6 +95,14 @@ class DeveloperLayout(Widget):
     )
     self._on_enable_ui_debug(self._params.get_bool("ShowDebugInfo"))
 
+    self._prebuilt_btn = button_item(lambda: tr("Auto Prebuilt"), self._maintenance_button_text,
+                                     description=lambda: self._operation_detail("AutoPrebuiltDetail"),
+                                     callback=lambda: self._maintenance_command("prebuilt"))
+    self._baseline_btn = button_item(lambda: tr("Baseline Update"), self._baseline_button_text,
+                                     description=lambda: self._operation_detail("BaselineUpdateDetail"), callback=self._baseline_command)
+    self._cancel_btn = button_item(lambda: tr("Cancel Baseline Update"), lambda: tr("CANCEL"),
+                                   callback=lambda: self._maintenance_command("cancel"))
+
     self._scroller = Scroller([
       self._adb_toggle,
       self._ssh_toggle,
@@ -103,13 +112,59 @@ class DeveloperLayout(Widget):
       self._lat_maneuver_toggle,
       self._alpha_long_toggle,
       self._ui_debug_toggle,
+      self._prebuilt_btn,
+      self._baseline_btn,
+      self._cancel_btn,
     ], line_separator=True, spacing=0)
 
     # Toggles should be not available to change in onroad state
     ui_state.add_offroad_transition_callback(self._update_toggles)
 
+  def _maintenance_running(self) -> bool:
+    return (self._params.get("MaintenanceState") or "idle") not in ("idle", "failed")
+
+  def _operation_running(self, operation: str) -> bool:
+    return self._maintenance_running() and self._params.get("MaintenanceOperation") == operation
+
+  def _operation_detail(self, idle_param: str) -> str:
+    operation = "prebuilt" if idle_param == "AutoPrebuiltDetail" else "baseline"
+    if self._operation_running(operation) or (self._params.get("MaintenanceState") == "failed" and
+                                              self._params.get("MaintenanceOperation") == operation):
+      return self._params.get("MaintenanceDetail") or ""
+    return self._params.get(idle_param) or ""
+
+  def _maintenance_button_text(self) -> str:
+    if self._operation_running("prebuilt"):
+      return f"{self._params.get('MaintenanceProgress') or 0}%"
+    return tr("GENERATE")
+
+  def _baseline_button_text(self) -> str:
+    if self._baseline_failed():
+      return tr("RETRY")
+    if self._operation_running("baseline"):
+      return f"{self._params.get('MaintenanceProgress') or 0}%"
+    return tr("UPDATE")
+
+  def _maintenance_command(self, command: str):
+    self._params.put("MaintenanceCommand", command, block=True)
+
+  def _baseline_command(self):
+    self._maintenance_command("retry" if self._baseline_failed() else "baseline")
+
+  def _baseline_failed(self) -> bool:
+    return self._params.get("MaintenanceState") == "failed" and self._params.get("MaintenanceOperation") == "baseline"
+
   def _render(self, rect):
+    self._update_maintenance_controls()
     self._scroller.render(rect)
+
+  def _update_maintenance_controls(self):
+    state = self._params.get("MaintenanceState") or "idle"
+    self._prebuilt_btn.action_item.set_enabled(ui_state.is_offroad() and self._params.get_bool("AutoPrebuiltReady") and state == "idle")
+    self._baseline_btn.action_item.set_enabled(ui_state.is_offroad() and
+                                               (self._params.get_bool("BaselineUpdateReady") or self._baseline_failed()) and
+                                               state in ("idle", "failed"))
+    self._cancel_btn.set_visible(self._baseline_failed())
 
   def show_event(self):
     super().show_event()
@@ -118,6 +173,7 @@ class DeveloperLayout(Widget):
 
   def _update_toggles(self):
     ui_state.update_params()
+    self._update_maintenance_controls()
 
     # Hide non-release toggles on release builds
     # TODO: we can do an onroad cycle, but alpha long toggle requires a deinit function to re-enable radar and not fault
