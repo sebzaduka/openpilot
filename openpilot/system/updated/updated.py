@@ -185,6 +185,10 @@ def finalize_update() -> None:
     shutil.rmtree(FINALIZED)
   shutil.copytree(OVERLAY_MERGED, FINALIZED, symlinks=True)
 
+  # A read-only Git command in the live checkout can briefly create an optional
+  # lock while copytree is walking .git. No process operates in FINALIZED yet,
+  # so a copied lock is necessarily stale.
+  Path(FINALIZED, ".git/index.lock").unlink(missing_ok=True)
   run(["git", "reset", "--hard"], FINALIZED)
   run(["git", "submodule", "foreach", "--recursive", "git", "reset", "--hard"], FINALIZED)
 
