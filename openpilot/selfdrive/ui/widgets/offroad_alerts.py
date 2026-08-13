@@ -11,6 +11,8 @@ from openpilot.system.ui.lib.scroll_panel import GuiScrollPanel
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.lib.wrap_text import wrap_text
 from openpilot.system.ui.widgets import Widget
+from openpilot.system.ui.widgets import DialogResult
+from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 from openpilot.system.ui.widgets.html_render import HtmlRenderer
 from openpilot.selfdrive.selfdrived.alertmanager import OFFROAD_ALERTS
 
@@ -111,11 +113,20 @@ class AbstractAlert(Widget, ABC):
 
     self.reboot_btn = ActionButton(lambda: tr("Reboot and Update"), min_width=600)
     self.reboot_btn.set_click_callback(lambda: HARDWARE.reboot())
+    self.baseline_btn = ActionButton(lambda: tr("Update Baseline"), min_width=500)
+    self.baseline_btn.set_click_callback(self._confirm_baseline_update)
 
     # TODO: just use a Scroller?
     self.content_rect = rl.Rectangle(0, 0, 0, 0)
     self.scroll_panel_rect = rl.Rectangle(0, 0, 0, 0)
     self.scroll_panel = GuiScrollPanel()
+
+  def _confirm_baseline_update(self):
+    def confirmed(result: DialogResult):
+      if result == DialogResult.CONFIRM:
+        self.params.put("MaintenanceCommand", "baseline", block=True)
+
+    gui_app.push_widget(ConfirmDialog(tr("Apply the new baseline and rebuild this branch?"), tr("Update"), callback=confirmed))
 
   def show_event(self):
     super().show_event()
@@ -195,6 +206,11 @@ class AbstractAlert(Widget, ABC):
       self.excessive_actuation_btn.set_position(actuation_x, footer_y)
       self.excessive_actuation_btn.render()
 
+    elif self.baseline_btn.is_visible:
+      baseline_x = rect.x + rect.width - AlertConstants.MARGIN - self.baseline_btn.rect.width
+      self.baseline_btn.set_position(baseline_x, footer_y)
+      self.baseline_btn.render()
+
     elif self.snooze_btn.is_visible:
       snooze_x = rect.x + rect.width - AlertConstants.MARGIN - self.snooze_btn.rect.width
       self.snooze_btn.set_position(snooze_x, footer_y)
@@ -213,6 +229,7 @@ class OffroadAlert(AbstractAlert):
     active_count = 0
     connectivity_needed = False
     excessive_actuation = False
+    baseline_update = False
 
     for alert_data in self.sorted_alerts:
       text = ""
@@ -233,8 +250,12 @@ class OffroadAlert(AbstractAlert):
       if alert_data.key == "Offroad_ExcessiveActuation" and alert_data.visible:
         excessive_actuation = True
 
+      if alert_data.key == "Offroad_BaselineUpdate" and alert_data.visible:
+        baseline_update = True
+
     self.excessive_actuation_btn.set_visible(excessive_actuation)
     self.snooze_btn.set_visible(connectivity_needed and not excessive_actuation)
+    self.baseline_btn.set_visible(baseline_update and not excessive_actuation)
     return active_count
 
   def get_content_height(self) -> float:

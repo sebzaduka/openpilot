@@ -85,6 +85,13 @@ class DeveloperLayoutMici(NavScroller):
     self._debug_mode_toggle = BigParamControl("ui debug mode", "ShowDebugInfo",
                                               toggle_callback=lambda checked: (gui_app.set_show_touches(checked),
                                                                                gui_app.set_show_fps(checked)))
+    maintenance_icon = gui_app.texture("icons_mici/settings/device/update.png", 64, 64)
+    self._prebuilt_btn = BigButton("auto prebuilt", "", icon=maintenance_icon)
+    self._baseline_btn = BigButton("baseline update", "", icon=maintenance_icon)
+    self._cancel_maintenance_btn = BigButton("cancel baseline", "", icon=gui_app.texture("icons_mici/setup/warning.png", 64, 64))
+    self._prebuilt_btn.set_click_callback(lambda: ui_state.params.put("MaintenanceCommand", "prebuilt", block=True))
+    self._baseline_btn.set_click_callback(self._baseline_command)
+    self._cancel_maintenance_btn.set_click_callback(lambda: ui_state.params.put("MaintenanceCommand", "cancel", block=True))
 
     self._scroller.add_widgets([
       self._adb_toggle,
@@ -95,6 +102,9 @@ class DeveloperLayoutMici(NavScroller):
       self._lat_maneuver_toggle,
       self._alpha_long_toggle,
       self._debug_mode_toggle,
+      self._prebuilt_btn,
+      self._baseline_btn,
+      self._cancel_maintenance_btn,
     ])
 
     # Toggle lists
@@ -133,6 +143,33 @@ class DeveloperLayoutMici(NavScroller):
   def _update_state(self):
     super()._update_state()
     self._ssh_fetcher.update()
+    state = ui_state.params.get("MaintenanceState") or "idle"
+    operation = ui_state.params.get("MaintenanceOperation") or ""
+    baseline_failed = state == "failed" and ui_state.params.get("MaintenanceOperation") == "baseline"
+    running = state not in ("idle", "failed")
+    prebuilt_running = running and operation == "prebuilt"
+    baseline_running = running and operation == "baseline"
+    progress = ui_state.params.get("MaintenanceProgress") or 0
+    detail = ui_state.params.get("MaintenanceDetail") or ""
+    self._prebuilt_btn.set_value(f"{progress}%" if prebuilt_running else
+                                 (detail if state == "failed" and operation == "prebuilt" else
+                                  ui_state.params.get("AutoPrebuiltDetail") or ""))
+    self._baseline_btn.set_value(f"{progress}%" if baseline_running else
+                                 (detail if baseline_failed else ui_state.params.get("BaselineUpdateDetail") or ""))
+    self._prebuilt_btn.set_rotate_icon(prebuilt_running)
+    self._baseline_btn.set_rotate_icon(baseline_running)
+    self._prebuilt_btn.set_enabled(ui_state.is_offroad() and ui_state.params.get_bool("AutoPrebuiltReady") and state == "idle")
+    self._baseline_btn.set_enabled(ui_state.is_offroad() and
+                                   (ui_state.params.get_bool("BaselineUpdateReady") or baseline_failed) and
+                                   state in ("idle", "failed"))
+    self._baseline_btn.set_text("retry baseline" if baseline_failed else "baseline update")
+    self._cancel_maintenance_btn.set_visible(baseline_failed)
+
+  def _baseline_command(self):
+    failed = (ui_state.params.get("MaintenanceState") == "failed" and
+              ui_state.params.get("MaintenanceOperation") == "baseline")
+    command = "retry" if failed else "baseline"
+    ui_state.params.put("MaintenanceCommand", command, block=True)
 
   def show_event(self):
     super().show_event()
