@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import subprocess
+import json
 
 # NOTE: Do NOT import anything here that needs be built (e.g. params)
 from openpilot.common.basedir import BASEDIR
@@ -62,6 +63,13 @@ def build() -> None:
       with TextWindow("openpilot failed to build\n \n" + error_s) as t:
         t.wait_for_exit()
     exit(1)
+
+  # Auto-prebuilt packaging must be able to prove that this exact source commit
+  # completed the normal device build, not merely find binaries from an older checkout.
+  commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=BASEDIR, text=True).strip()
+  marker = os.getenv("OPENPILOT_BUILD_MARKER", "/tmp/openpilot-build.json")
+  with open(marker, "w") as f:
+    json.dump({"commit": commit}, f)
 
 if __name__ == "__main__":
   build()
