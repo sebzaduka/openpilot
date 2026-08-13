@@ -13,6 +13,7 @@ from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets.scroller import Scroller
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
+from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog
 
 REFRESH_INTERVAL = 5.0  # seconds
 
@@ -240,6 +241,12 @@ class MiciOffroadAlerts(Scroller):
 
       # Create alert item widget
       alert_item = AlertItem(alert_data)
+      if key == "Offroad_BaselineUpdate":
+        def confirm_baseline():
+          icon = gui_app.texture("icons_mici/settings/device/update.png", 64, 64)
+          gui_app.push_widget(BigConfirmationDialog("update baseline", icon,
+                                                    lambda: self.params.put("MaintenanceCommand", "baseline", block=True)))
+        alert_item.set_click_callback(confirm_baseline)
       self.alert_items.append(alert_item)
       self._scroller.add_widget(alert_item)
 
