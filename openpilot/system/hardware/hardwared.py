@@ -27,6 +27,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.system.statsd import statlog
 from openpilot.system.hardware.power_monitoring import PowerMonitoring
 from openpilot.system.hardware.fan_controller import FanController
+from openpilot.system.maintenance.maintenance import maintenance_blocked
 from openpilot.common.version import terms_version, training_version, get_build_metadata, terms_version_sp, CHESTNUT_BRANCHES
 
 
@@ -199,6 +200,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     "ignition": False,
     "not_onroad_cycle": True,
     "device_temp_good": True,
+    "maintenance_inactive": True,
   }
   startup_conditions: dict[str, bool] = {}
   startup_conditions_prev: dict[str, bool] = {}
@@ -252,6 +254,7 @@ def hardware_thread(end_event, hw_queue) -> None:
       params.put_bool("OnroadCycleRequested", False, block=True)
       offroad_cycle_count = sm.frame
     onroad_conditions["not_onroad_cycle"] = (sm.frame - offroad_cycle_count) >= ONROAD_CYCLE_TIME * SERVICE_LIST['pandaStates'].frequency
+    onroad_conditions["maintenance_inactive"] = not maintenance_blocked()
 
     if sm.updated['pandaStates'] and len(pandaStates) > 0:
 
