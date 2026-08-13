@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 import os
 import subprocess
+import json
+from pathlib import Path
 
 # NOTE: Do NOT import anything here that needs be built (e.g. params)
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.spinner import Spinner
 from openpilot.common.text_window import TextWindow
 from openpilot.common.hardware import HARDWARE, AGNOS
+from openpilot.selfdrive.modeld.compiled_model_artifacts import validate_compatible_targets
+from openpilot.selfdrive.modeld.helpers import chestnut_present
 
 def build() -> None:
   spinner = Spinner()
@@ -15,12 +19,14 @@ def build() -> None:
   HARDWARE.set_power_save(False)
   if AGNOS:
     os.sched_setaffinity(0, range(8))  # ensure we can use the isolcpus cores
+  chestnut_detected = chestnut_present() if AGNOS else False
 
   # building with all cores can result in using too much memory, so retry serially
   compile_output: list[bytes] = []
   for parallelism in ([], ["-j4"], ["-j1"]):
     compile_output.clear()
-    with subprocess.Popen(["scons", *parallelism], cwd=BASEDIR, env={**os.environ, "PWD": BASEDIR}, stderr=subprocess.PIPE) as scons:
+    with subprocess.Popen(["scons", *parallelism], cwd=BASEDIR,
+                          env={**os.environ, "PWD": BASEDIR}, stderr=subprocess.PIPE) as scons:
       assert scons.stderr is not None
 
       # Read progress from stderr and update spinner
@@ -62,6 +68,23 @@ def build() -> None:
       with TextWindow("openpilot failed to build\n \n" + error_s) as t:
         t.wait_for_exit()
     exit(1)
+
+  # Auto-prebuilt packaging must be able to prove that this exact source commit
+  # completed the normal device build and which locally compiled model artifacts
+  # that build produced. A source build may complete without Chestnut, but Auto
+  # Prebuilt requires all three canonical targets.
+  commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=BASEDIR, text=True).strip()
+  model_validation = validate_compatible_targets(
+    Path(BASEDIR), Path(BASEDIR) / "openpilot/selfdrive/modeld/models", ["small", "dm", "big"], required_source="local")
+  marker = os.getenv("OPENPILOT_BUILD_MARKER", "/tmp/openpilot-build.json")
+  with open(marker, "w") as f:
+    json.dump({
+      "schema": 1,
+      "commit": commit,
+      "artifact_policy": "local-only",
+      "chestnut_detected": chestnut_detected,
+      "models": model_validation["results"],
+    }, f)
 
 if __name__ == "__main__":
   build()
