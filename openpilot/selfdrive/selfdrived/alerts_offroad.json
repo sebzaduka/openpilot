@@ -1,4 +1,12 @@
 {
+  "Offroad_BaselineUpdate": {
+    "text": "A new baseline is available: %1. Open Developer settings to apply it.",
+    "severity": 0
+  },
+  "Offroad_BaselineConflict": {
+    "text": "Baseline update has merge conflicts requiring manual patching. The source checkout was restored and driving is available.",
+    "severity": 1
+  },
   "Offroad_TemperatureTooHigh": {
     "text": "Device temperature too high. System cooling down before starting. Current internal component temperature: %1",
     "severity": 0
