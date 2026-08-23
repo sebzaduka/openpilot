@@ -5,9 +5,11 @@ import numpy as np
 from openpilot.common.test import OpenpilotTestCase
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log
+from opendbc.car.structs import car
 from openpilot.common.params import Params
-from openpilot.selfdrive.locationd.calibrationd import Calibrator, INPUTS_NEEDED, INPUTS_WANTED, BLOCK_SIZE, MIN_SPEED_FILTER, \
-                                                         MAX_YAW_RATE_FILTER, SMOOTH_CYCLES, HEIGHT_INIT, MAX_ALLOWED_PITCH_SPREAD, MAX_ALLOWED_YAW_SPREAD
+from openpilot.selfdrive.locationd.calibrationd import (Calibrator, calibration_should_reset, INPUTS_NEEDED, INPUTS_WANTED, BLOCK_SIZE,
+                                                        MIN_SPEED_FILTER, MAX_YAW_RATE_FILTER, SMOOTH_CYCLES, HEIGHT_INIT,
+                                                        MAX_ALLOWED_PITCH_SPREAD, MAX_ALLOWED_YAW_SPREAD)
 
 
 def process_messages(c, cam_odo_calib, cycles,
@@ -31,6 +33,25 @@ def process_messages(c, cam_odo_calib, cycles,
                         [cam_odo_height_std, cam_odo_height_std, cam_odo_height_std])
 
 class TestCalibrationd(OpenpilotTestCase):
+
+  @staticmethod
+  def car_params(fingerprint: str, vin: str) -> car.CarParams:
+    return car.CarParams(carFingerprint=fingerprint, carVin=vin)
+
+  def test_reset_on_rivian_vin_change(self):
+    previous = self.car_params("RIVIAN_R1", "7FCTGAAL1NN000001")
+    current = self.car_params("RIVIAN_R1", "7FCTGAAL1NN000002")
+    assert calibration_should_reset(current, previous.to_bytes())
+
+    assert not calibration_should_reset(current, current.to_bytes())
+    assert not calibration_should_reset(current, self.car_params("MOCK", previous.carVin).to_bytes())
+
+  def test_no_reset_without_valid_vins(self):
+    previous = self.car_params("RIVIAN_R1", "0" * 17)
+    current = self.car_params("RIVIAN_R1", "7FCTGAAL1NN000002")
+    assert not calibration_should_reset(current, previous.to_bytes())
+    assert not calibration_should_reset(self.car_params("RIVIAN_R1", "0" * 17), current.to_bytes())
+    assert not calibration_should_reset(current, None)
 
   def test_read_saved_params(self):
     msg = messaging.new_message('extrinsicsCalibration')
