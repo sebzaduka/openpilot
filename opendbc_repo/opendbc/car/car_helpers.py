@@ -96,7 +96,14 @@ def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_mu
     if cached_params is not None and cached_params.brand != "mock" and len(cached_params.carFw) > 0 and \
        (cached_params.carVin != VIN_UNKNOWN or os.environ.get("REPLAY")) and not disable_fw_cache:
       carlog.warning("Using cached CarParams")
-      vin_rx_addr, vin_rx_bus, vin = -1, -1, cached_params.carVin
+      # A Rivian installation can be moved between otherwise identical R1 vehicles. Refresh the VIN so
+      # consumers can distinguish the current vehicle instead of inheriting the previous route's identity.
+      if cached_params.brand == "rivian" and not os.environ.get("REPLAY"):
+        carlog.warning("Refreshing Rivian VIN while using cached FW versions")
+        set_obd_multiplexing(True)
+        vin_rx_addr, vin_rx_bus, vin = get_vin(can_recv, can_send, (0, 1))
+      else:
+        vin_rx_addr, vin_rx_bus, vin = -1, -1, cached_params.carVin
       car_fw = list(cached_params.carFw)
       cached = True
     else:
