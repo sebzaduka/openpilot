@@ -13,6 +13,7 @@ from typing import NoReturn
 
 from openpilot.cereal import log
 from opendbc.car.structs import car
+from opendbc.car.vin import is_valid_vin, VIN_UNKNOWN
 import openpilot.cereal.messaging as messaging
 from openpilot.common.hardware import HARDWARE
 from openpilot.common.constants import CV
@@ -45,6 +46,22 @@ else:
   PITCH_LIMITS = np.array([-0.09074112085129739, 0.17])
 YAW_LIMITS = np.array([-0.06912048084718224, 0.06912048084718235])
 DEBUG = os.getenv("DEBUG") is not None
+RIVIAN_R1 = "RIVIAN_R1"
+
+
+def calibration_should_reset(CP: car.CarParams, previous_cp_bytes: bytes | None) -> bool:
+  """Return whether a saved calibration belongs to a different Rivian."""
+  current_vin_known = CP.carVin != VIN_UNKNOWN and is_valid_vin(CP.carVin)
+  if CP.carFingerprint != RIVIAN_R1 or not current_vin_known or previous_cp_bytes is None:
+    return False
+
+  try:
+    with car.CarParams.from_bytes(previous_cp_bytes) as previous_cp:
+      previous_vin_known = previous_cp.carVin != VIN_UNKNOWN and is_valid_vin(previous_cp.carVin)
+      return previous_cp.carFingerprint == RIVIAN_R1 and previous_vin_known and previous_cp.carVin != CP.carVin
+  except Exception:
+    cloudlog.exception("Error reading previous CarParams for calibration identity")
+    return False
 
 
 def is_calibration_valid(rpy: np.ndarray) -> bool:
@@ -267,6 +284,10 @@ def main() -> NoReturn:
 
   params_reader = Params()
   CP = messaging.log_from_bytes(params_reader.get("CarParams", block=True), car.CarParams)
+
+  if calibration_should_reset(CP, params_reader.get("CarParamsPrevRoute")):
+    cloudlog.warning("Resetting calibration after Rivian VIN change")
+    params_reader.remove("CalibrationParams")
 
   calibrator = Calibrator(param_put=True)
   calibrator.not_car = CP.notCar
