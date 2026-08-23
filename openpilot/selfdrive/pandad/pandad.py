@@ -116,7 +116,18 @@ def main() -> None:
         PandaDFU(serial).recover()
         time.sleep(1)
 
-      panda_serials = Panda.list()
+      spi_serials = Panda.spi_list()
+      usb_serials = Panda.usb_list()
+      panda_serials = list(set(spi_serials + usb_serials))
+      cloudlog.event(
+        "pandad.discovery",
+        error=True,
+        attempt=count,
+        pandaSerials=panda_serials,
+        spiSerials=spi_serials,
+        usbSerials=usb_serials,
+        reconnectCount=max(0, count - 1),
+      )
       if len(panda_serials):
         # custom flasher for xnor's Rivian Longitudinal Upgrade Kit
         flash_rivian_long(panda_serials)
@@ -132,13 +143,13 @@ def main() -> None:
         process = subprocess.Popen(["./pandad"], cwd=os.path.join(BASEDIR, "openpilot/selfdrive/pandad"))
         process.wait()
     # TODO: wrap all panda exceptions in a base panda exception
-    except (usb1.USBErrorNoDevice, usb1.USBErrorPipe):
+    except (usb1.USBErrorNoDevice, usb1.USBErrorPipe) as e:
       # a panda was disconnected while setting everything up. let's try again
-      cloudlog.exception("Panda USB exception while setting up")
-    except PandaProtocolMismatch:
-      cloudlog.exception("pandad.protocol_mismatch")
-    except Exception:
-      cloudlog.exception("pandad.uncaught_exception")
+      cloudlog.exception({"event": "pandad.usb_exception", "errorType": type(e).__name__, "attempt": count})
+    except PandaProtocolMismatch as e:
+      cloudlog.exception({"event": "pandad.protocol_mismatch", "errorType": type(e).__name__, "attempt": count})
+    except Exception as e:
+      cloudlog.exception({"event": "pandad.uncaught_exception", "errorType": type(e).__name__, "attempt": count})
 
 
 if __name__ == "__main__":

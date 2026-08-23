@@ -1,4 +1,5 @@
 from opendbc.car import get_safety_config, structs
+from opendbc.car.carlog import carlog
 from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.car.rivian.carcontroller import CarController
 from opendbc.car.rivian.carstate import CarState
@@ -13,6 +14,10 @@ class CarInterface(CarInterfaceBase):
   RadarInterface = RadarInterface
 
   @staticmethod
+  def _dashcam_reason(fingerprint: dict[int, dict[int, int]]) -> str | None:
+    return None if 0x1310 in fingerprint.get(1, {}) else "RIVIAN_ANGLE_UPGRADE_NOT_DETECTED"
+
+  @staticmethod
   def _get_params(ret: structs.CarParams, candidate, fingerprint, car_fw, alpha_long, is_release, docs) -> structs.CarParams:
     ret.brand = "rivian"
 
@@ -23,8 +28,19 @@ class CarInterface(CarInterfaceBase):
       ret.flags |= RivianFlags.GEN2.value
 
     # no angle upgrade installed
-    if 0x1310 not in fingerprint[1]:
+    dashcam_reason = CarInterface._dashcam_reason(fingerprint)
+    if dashcam_reason is not None:
       ret.dashcamOnly = True
+
+    carlog.error({
+      "event": "rivian_startup_diagnostic",
+      "candidate": str(candidate),
+      "dashcam_only": ret.dashcamOnly,
+      "dashcam_reason": dashcam_reason or "NONE",
+      "angle_upgrade_0x1310_bus1": 0x1310 in fingerprint.get(1, {}),
+      "longitudinal_upgrade_0x131a_bus1": 0x131a in fingerprint.get(1, {}),
+      "bus_address_counts": {str(bus): len(addresses) for bus, addresses in fingerprint.items()},
+    })
 
     ret.steerActuatorDelay = 0.1
     ret.steerAtStandstill = True
