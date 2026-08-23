@@ -33,6 +33,16 @@ EventName = log.OnroadEvent.EventName
 carlog.addHandler(ForwardingHandler(cloudlog))
 
 
+def get_passive_reason(dashcam_only: bool, controller_present: bool, openpilot_enabled: bool) -> str:
+  if dashcam_only:
+    return "CARPARAMS_DASHCAM_ONLY"
+  if not controller_present:
+    return "NO_CAR_CONTROLLER"
+  if not openpilot_enabled:
+    return "OPENPILOT_ENABLED_TOGGLE_OFF"
+  return "NONE"
+
+
 def obd_callback(params: Params) -> ObdCallback:
   def set_obd_multiplexing(obd_multiplexing: bool):
     if params.get_bool("ObdMultiplexingEnabled") != obd_multiplexing:
@@ -131,12 +141,26 @@ class Car:
     self.dynamic_experimental_control = self.params.get_bool("DynamicExperimentalControl")
 
     openpilot_enabled_toggle = self.params.get_bool("OpenpilotEnabledToggle")
-    controller_available = self.CI.CC is not None and openpilot_enabled_toggle and not self.CP.dashcamOnly
+    controller_present = self.CI.CC is not None
+    controller_available = controller_present and openpilot_enabled_toggle and not self.CP.dashcamOnly
     self.CP.passive = not controller_available or self.CP.dashcamOnly
     if self.CP.passive:
       safety_config = structs.CarParams.SafetyConfig()
       safety_config.safetyModel = structs.CarParams.SafetyModel.noOutput
       self.CP.safetyConfigs = [safety_config]
+
+    cloudlog.event(
+      "car.passive_decision",
+      error=True,
+      carFingerprint=self.CP.carFingerprint,
+      fingerprintSource=str(self.CP.fingerprintSource),
+      passive=self.CP.passive,
+      passiveReason=get_passive_reason(self.CP.dashcamOnly, controller_present, openpilot_enabled_toggle),
+      dashcamOnly=self.CP.dashcamOnly,
+      controllerPresent=controller_present,
+      openpilotEnabledToggle=openpilot_enabled_toggle,
+      safetyConfigs=[{"safetyModel": str(c.safetyModel), "safetyParam": c.safetyParam} for c in self.CP.safetyConfigs],
+    )
 
     if self.CP.secOcRequired:
       # Copy user key if available
