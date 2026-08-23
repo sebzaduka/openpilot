@@ -199,19 +199,14 @@ class UIStateSP:
         self.params.remove("NeuralNetworkLateralControl")
         self.params.remove("LateralJerkTorqueController")
 
-      # Alpha longitudinal: clear if not available
-      if not CP.alphaLongitudinalAvailable:
-        self.params.remove("AlphaLongitudinalEnabled")
-
       # BSM not available: clear BSM-dependent settings
       if not CP.enableBsm:
         self.params.remove("AutoLaneChangeBsmDelay")
     else:
-      # No CarParams: clear all car-dependent params as safety default
+      # No CarParams: clear incompatible control settings as a safety default
       self.params.remove("EnforceTorqueControl")
       self.params.remove("NeuralNetworkLateralControl")
       self.params.remove("LateralJerkTorqueController")
-      self.params.remove("AlphaLongitudinalEnabled")
 
     # No longitudinal control: no experimental mode or DEC
     if not has_long:
