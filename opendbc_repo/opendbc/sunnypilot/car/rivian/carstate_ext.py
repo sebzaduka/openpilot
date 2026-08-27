@@ -30,11 +30,13 @@ class CarStateExt:
     self.distance_button = 0
     self.increase_counter = 0
     self.decrease_counter = 0
-    self.stalk_down_counter = 0
+    self.acm_accel_last = 0.0
+    self.acm_rail_counter = 0
 
   def update_longitudinal_upgrade(self, ret: structs.CarState, can_parsers: dict[StrEnum, CANParser]) -> None:
     cp_park = can_parsers[Bus.alt]
     cp_adas = can_parsers[Bus.adas]
+    cp_cam = can_parsers[Bus.cam]
     cp = can_parsers[Bus.pt]
 
     prev_increase_button = self.increase_button
@@ -77,10 +79,20 @@ class CarStateExt:
 
       # VDM_UserAdasRequest: 0=IDLE, 1=UP_1, 2=UP_2, 3=DOWN_1, 4=DOWN_2
       stalk_down = int(cp.vl["VDM_AdasSts"]["VDM_UserAdasRequest"]) in (3, 4)
-      self.stalk_down_counter = self.stalk_down_counter + 1 if stalk_down else 0
-      if self.stalk_down_counter == 50:
-        # Mimic Rivian ACC: holding stalk 0.5s sets speed to current speed (never decreases)
+      if stalk_down:
+        # Mimic Rivian ACC: stalk down sets speed to current speed (never decreases)
         self.set_speed = max(self.set_speed, ret.vEgoCluster)
+
+      # stock ACM stuck at its decel rail: our set speed sits above the ACM's target
+      acm_accel = cp_cam.vl["ACM_longitudinalRequest"]["ACM_AccelerationRequest"]
+      settled = abs(ret.vEgo - self.set_speed) < 0.5 * conversion
+      stuck = ret.cruiseState.enabled and settled and acm_accel == -3.92 and acm_accel == self.acm_accel_last
+      self.acm_accel_last = acm_accel
+      self.acm_rail_counter = self.acm_rail_counter + 1 if stuck else 0
+
+      if self.acm_rail_counter >= 1000:
+        self.set_speed -= conversion
+        self.acm_rail_counter = 0
 
       self.set_speed = max(MIN_SET_SPEED, min(self.set_speed, MAX_SET_SPEED))
       ret.cruiseState.speed = self.set_speed
