@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
+# An optional persistent file lets an install configure the AMD SMU power
+# limit without changing the software. An explicit environment value takes precedence.
+AM_POWER_LIMIT_FILE="${AM_POWER_LIMIT_FILE:-/data/am-power-limit}"
+if test -z "${AM_POWER_LIMIT+x}" && test -r "$AM_POWER_LIMIT_FILE"; then
+  AM_POWER_LIMIT="$(<"$AM_POWER_LIMIT_FILE")"
+  if test -n "$AM_POWER_LIMIT"; then
+    export AM_POWER_LIMIT
+  fi
+fi
+exec "$DIR/modeld.py" "$@"
