@@ -24,7 +24,7 @@ from openpilot.common.test import OpenpilotTestCase
 from openpilot.common.file_chunker import get_chunk_name, get_manifest_path
 from openpilot.selfdrive.test.helpers import http_server_context
 from openpilot.sunnypilot.models import manager as manager_module
-from openpilot.sunnypilot.models.fetcher import ModelFetcher, get_cached_bundles
+from openpilot.sunnypilot.models.fetcher import ModelFetcher, ModelParser, get_cached_bundles
 from openpilot.sunnypilot.models import helpers
 from openpilot.sunnypilot.models.helpers import (get_active_bundle, get_active_source, get_selected_bundle,
                                                   resolve_bundle_by_ref, validate_active_bundles)
@@ -459,7 +459,7 @@ class TestResolveBundleByRef(OpenpilotTestCase):
 
 
 def manifest_bundle(short_name: str, ref: str, index: int = 0, is_big: bool = False) -> dict:
-  """Minimal manifest bundle dict, version-compatible (no chunks to avoid disk side effects).
+  """Minimal version-compatible manifest bundle dict.
   Big (usbgpu) bundles carry `is_big: true` in the manifest JSON."""
   return {
     "index": index,
@@ -479,6 +479,24 @@ def manifest_bundle(short_name: str, ref: str, index: int = 0, is_big: bool = Fa
       },
     }],
   }
+
+
+class TestModelParser(OpenpilotTestCase):
+  def test_chunked_catalog_parse_has_no_disk_side_effects(self):
+    """Catalog entries may reuse a filename with different chunk layouts.
+    Only a completed download owns the on-disk chunk manifest."""
+    bundles = [manifest_bundle("first", "aaa"), manifest_bundle("second", "bbb")]
+    for bundle, num_chunks in zip(bundles, (5, 4), strict=True):
+      artifact = bundle["models"][0]["artifact"]
+      artifact["file_name"] = "shared.pkl"
+      artifact["chunks"] = [{"file_name": f"chunk-{i}", "sha256": str(i)} for i in range(num_chunks)]
+
+    with tempfile.TemporaryDirectory() as model_root, \
+         mock.patch("openpilot.common.hardware.hw.Paths.model_root", return_value=model_root):
+      parsed = ModelParser.parse_models({"bundles": bundles})
+      assert os.listdir(model_root) == []
+
+    assert [len(bundle.models[0].artifact.chunks) for bundle in parsed] == [5, 4]
 
 
 def fresh_sync_time() -> int:
