@@ -7,6 +7,7 @@ from opendbc.car.lateral import get_friction
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
+from openpilot.selfdrive.controls.lib.latcontrol_angle import STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.common.pid import PIDController
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
@@ -47,6 +48,7 @@ class LatControlTorque(LatControl):
     self.lat_accel_request_buffer = deque([0.] * self.lat_accel_request_buffer_len , maxlen=self.lat_accel_request_buffer_len)
     self.previous_measurement = 0.0
     self.measurement_rate_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
+    self.angle_steering = False
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
 
@@ -99,7 +101,7 @@ class LatControlTorque(LatControl):
       # TODO jerk is weighted by lat_delay for legacy reasons, but should be made independent of it
       ff += get_friction(error, lateral_accel_deadzone, FRICTION_THRESHOLD, self.torque_params)
 
-      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
+      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5 or self.angle_steering
       output_lataccel = self.pid.update(pid_log.error,
                                        -measurement_rate,
                                         feedforward=ff,
@@ -122,7 +124,13 @@ class LatControlTorque(LatControl):
       pid_log.actualLateralAccel = float(measurement)
       pid_log.desiredLateralAccel = float(setpoint)
       pid_log.desiredLateralJerk = float(desired_lateral_jerk)
-      pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output_torque) < 1e-3, CS, steer_limited_by_safety, curvature_limited))
+      if self.angle_steering:
+        # judge saturation like an angle car: the wheel can't follow the commanded angle
+        angle_steers_des = math.degrees(VM.get_steer_from_curvature(-desired_curvature, CS.vEgo, params.roll)) + params.angleOffsetDeg
+        angle_saturated = abs(angle_steers_des - CS.steeringAngleDeg) > STEER_ANGLE_SATURATION_THRESHOLD
+        pid_log.saturated = bool(self._check_saturation(angle_saturated, CS, False, curvature_limited))
+      else:
+        pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output_torque) < 1e-3, CS, steer_limited_by_safety, curvature_limited))
 
     # TODO left is positive in this convention
     return -output_torque, 0.0, pid_log
